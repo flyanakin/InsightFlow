@@ -1,0 +1,31 @@
+/venv
+.env
+
+# 默认忽略的文件
+/shelf/
+/workspace.xml
+# 基于编辑器的 HTTP 客户端请求
+/httpRequests/
+# Datasource local storage ignored files
+/dataSources/
+/dataSources.local.xml
+
+# mercury
+celery.sqlite
+celerybeat-schedule.db
+django-errors.log
+
+#token
+token.py
+
+#data
+jarvis.db
+/data/embedded/*.json
+
+#pytest
+/test/.pytest_cache
+/data/vectordb/
+
+#dagster
+/orchestration/quickstart_etl.egg-info/
+/venv/
