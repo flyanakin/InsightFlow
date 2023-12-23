@@ -27,5 +27,5 @@ jarvis.db
 /data/vectordb/
 
 #dagster
-/orchestration/quickstart_etl.egg-info/
+/quickstart_etl.egg-info/
 /venv/
