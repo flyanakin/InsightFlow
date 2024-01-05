@@ -1,6 +1,7 @@
 from dagster import asset, AssetExecutionContext, AssetIn
 from utils.airtable import Airtable
-from utils.tushare import get_last_trade_date, moving_sell_strategy, turnover_sell_strategy
+from utils.tushare import get_current_price, moving_sell_strategy, turnover_sell_strategy
+from utils.webhook import send_wework_message
 from quickstart_etl.resources import EnvResource
 import requests
 import json
@@ -17,48 +18,83 @@ def online_portfolio(context: AssetExecutionContext, env: EnvResource) -> pd.Dat
     )
     records = airtable.get_all_records()
     df = pd.DataFrame.from_records([record["fields"] for record in records])
+
+    latest_price_df = get_current_price()
+    context.log.debug(f"latest_price_df:\n{latest_price_df}")
+    latest_price_df = latest_price_df.rename(columns={'ts_code': '代码', 'close': '最新价格'})
+    df = pd.merge(df, latest_price_df, on='代码', how='left')
+
     context.log.info(f"rows:\n{len(df)}")
     context.log.info(f"online_portfolio:\n{df}")
     return df
 
 
 @asset(ins={"online_portfolio": AssetIn(key=["online_portfolio"])})
-def portfolio_analysis_sheet(context: AssetExecutionContext, env: EnvResource, online_portfolio: pd.DataFrame) -> pd.DataFrame:
-    ts.set_token(env.tushare_token)
-    pro = ts.pro_api()
-    calendar = pro.trade_cal(exchange='', start_date='20210101', end_date='20301231')
-    calendar = calendar[calendar['is_open'] == 1]
-    last_trade_date = get_last_trade_date(calendar)
-    latest_stock_df = pro.daily(
-        trade_date=last_trade_date, fields="ts_code,close"
-    )
-    latest_fund_df = pro.fund_daily(
-        trade_date=last_trade_date, fields="ts_code,close"
-    )
-    latest_price_df = pd.concat([latest_stock_df, latest_fund_df])
-    latest_price_df = latest_price_df.rename(columns={'ts_code': '代码', 'close': '最新价格'})
+def sub_portfolio_sheet(context: AssetExecutionContext, online_portfolio: pd.DataFrame):
 
-    df = pd.merge(online_portfolio, latest_price_df, on='代码', how='left')
-    df.loc[df['代码'] != '999999.ZZ', '当前价'] = df['最新价格']
-    df['总成本'] = df['成本价'] * df['持仓数量']
-    print(df[['资产名称','当前价']])
+    online_portfolio['总成本'] = online_portfolio['成本价'] * online_portfolio['持仓数量']
 
-    pivoted_to_p = df.groupby("组合")[['总成本', '最新市值', '持仓盈亏']].sum()
-    total_mv = pivoted_to_p['最新市值'].sum()
-    pivoted_to_p['仓位'] = pivoted_to_p['最新市值'] / total_mv
-    pivoted_to_p['组合盈亏比例'] = pivoted_to_p['持仓盈亏'] / pivoted_to_p['总成本']
-    return pivoted_to_p
+    pivoted = online_portfolio.groupby("组合名称")[['总成本', '最新市值', '持仓盈亏']].sum()
+    total_mv = pivoted['最新市值'].sum()
+    pivoted['仓位'] = pivoted['最新市值'] / total_mv
+    total_position = pivoted.loc[pivoted.index != '现金', '仓位'].sum()
+    pivoted['组合盈亏比例'] = pivoted['持仓盈亏'] / pivoted['总成本']
+    portfolio_profit_str = ""
+    for index, row in pivoted.iterrows():
+        if index != '其他' and index != '现金':
+            profit_str = f"· {index}组合：持仓收益{round(row['组合盈亏比例'] * 100, 2)}%，仓位：{round(row['仓位'] * 100, 2)}%"
+            portfolio_profit_str = portfolio_profit_str + profit_str + '\n'
+
+    ##组合剪枝计算
+    cut_l = []
+    for index, row in online_portfolio.iterrows():
+        if row['组合名称'] != '其他':
+            if row['持仓盈亏比例'] < -0.1:
+                stock_cut_str = f"{row['名称']}({row['组合名称']},{round(row['持仓盈亏比例']*100, 2)})"
+                cut_l.append(stock_cut_str)
+    stock_cut_l = "、".join(cut_l) if cut_l else '无'
+
+    message = f'''
+组合概览表现：
+· 总仓位：{round((total_position * 100),2)}%
+{portfolio_profit_str}
+
+止损提醒：
+· 组合剪枝：{stock_cut_l}
+    '''
+    context.log.info(pivoted)
+    context.log.info(message)
+    send_wework_message(message)
 
 
-@asset(ins={"portfolio_analysis_sheet": AssetIn(key=["portfolio_analysis_sheet"])})
-def wework_bot_message(context: AssetExecutionContext, env: EnvResource, portfolio_analysis_sheet: pd.DataFrame):
-    message = ''
-    hook_url = f"https://qyapi.weixin.qq.com/cgi-bin/webhook/send?key={env.wechat_token}"
-    post_data = {"msgtype": "text", "text": {"content": message}}
+@asset(ins={"online_portfolio": AssetIn(key=["online_portfolio"])})
+def profit_loss_sheet(context: AssetExecutionContext, online_portfolio: pd.DataFrame):
+    ##止盈计算
+    sell_result = ""
+    turn_result = ""
+    for index, row in online_portfolio.iterrows():
+        if (
+                row['持仓盈亏比例'] > 0.1
+                and row['组合名称'] != '其他'
+                and row['类型'] == '股票'
+        ):
+            profit = round(row['持仓盈亏比例'] * 100, 2)
+            stage, signal = moving_sell_strategy(row)
+            context.log.info(f"{row['名称']} {stage} {signal}")
+            sell_str = f"{row['名称']}(阶梯{stage}，持仓收益{profit}%，{signal})"
+            sell_result = sell_result + sell_str + "\n"
+            if stage > 0:
+                turnover_signal, total_mv, turnover_rate = turnover_sell_strategy(row)
+                turn_str = f"{row['名称']}(持仓收益{profit}%，市值{total_mv}亿,今日换手率{turnover_rate}%，{turnover_signal})"
+                context.log.info(f"{total_mv},{turnover_rate}")
+                turn_result = turn_result + turn_str + "\n"
 
-    headers = {"Content-Type": "application/json"}
-    requests.post(
-        url=hook_url,
-        headers=headers,
-        data=json.dumps(post_data),
-    )
+    message = f'''
+止盈提醒：
+· 25/8移动止盈：
+{sell_result}
+· 换手率止盈：
+{turn_result}
+    '''
+    context.log.info(message)
+    send_wework_message(message)
