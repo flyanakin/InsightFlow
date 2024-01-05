@@ -9,6 +9,7 @@ setup(
         "boto3",
         "pandas",
         "matplotlib",
+        "tushare"
     ],
     extras_require={"dev": ["dagster-webserver", "pytest"]},
 )
