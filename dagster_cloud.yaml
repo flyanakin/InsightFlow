@@ -1,4 +1,4 @@
 locations:
-- code_source:
-    package_name: quickstart_etl
-  location_name: insight_flow
+  - location_name: insight_flow
+    code_source:
+      package_name: quickstart_etl
