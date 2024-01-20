@@ -19,10 +19,12 @@ def online_portfolio(context: AssetExecutionContext, env: EnvResource) -> pd.Dat
     records = airtable.get_all_records()
     df = pd.DataFrame.from_records([record["fields"] for record in records])
 
-    latest_price_df = get_current_price()
+    latest_price_df = get_current_price(context)
     context.log.debug(f"latest_price_df:\n{latest_price_df}")
     latest_price_df = latest_price_df.rename(columns={'ts_code': '代码', 'close': '最新价格'})
     df = pd.merge(df, latest_price_df, on='代码', how='left')
+    df['持仓盈亏'] = (df['最新价格'] - df['成本价']) * df['持仓数量']
+    df['持仓盈亏比例'] = df['持仓盈亏'] / (df['成本价'] * df['持仓数量'])
 
     context.log.info(f"rows:\n{len(df)}")
     context.log.info(f"online_portfolio:\n{df}")

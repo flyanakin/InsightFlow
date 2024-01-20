@@ -3,10 +3,11 @@ from datetime import datetime,time,date,timedelta
 import math
 import tushare as ts
 import os
+from dagster import AssetExecutionContext
 tushare_token = os.getenv('TUSHARE_TOKEN')
 
 
-def get_current_price() -> pd.DataFrame:
+def get_current_price(context: AssetExecutionContext) -> pd.DataFrame:
     """
     获取当前股票价格
     :return:
@@ -24,17 +25,17 @@ def get_current_price() -> pd.DataFrame:
         current_date = (current_datetime - pd.Timedelta(days=1)).strftime("%Y%m%d")
     else:
         current_date = current_datetime.strftime("%Y%m%d")
-    print(f'current_date:\n{current_date}')
+    context.log.debug(f'current_date:\n{current_date}')
 
 
     # 找到最近的交易日
     # 找到不晚于当前日期的最近的交易日
     latest_trade_date = (
-        cal_df[cal_df["cal_date"] <= current_date]["cal_date"]
+        cal_df[(cal_df["cal_date"] <= current_date) & (cal_df["is_open"] == 1)]["cal_date"]
         .sort_values(ascending=False)
         .tolist()[0]
     )
-    print(f'latest_trade_date:\n{latest_trade_date}')
+    context.log.debug(f'latest_trade_date:\n{latest_trade_date}')
     latest_stock_df = pro.daily(
         trade_date=latest_trade_date, fields="ts_code,close"
     )
